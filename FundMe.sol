@@ -2,7 +2,7 @@
 
 pragma solidity ^0.8.8;
 
-import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "./PriceConverter.sol";
 
 /*
 The goal of this contract is to:
@@ -11,49 +11,77 @@ B) Withdraw Funds
 C) Set a minimum funding value in USD
 */
 
-        // first we want to be able to set a min fund amount in usd
-        // lets explore how to send ETH to this contract for funding
-        // every transaction should include: nonce, gas price, gas limit, to, value, data and v, r, s
-
 contract FundMe { 
-    // how do we check if msg.value is greater than the USD equivalent? we need to set the min usd value we want sent along with the fund function. But value refers to ETH and minimumUSD refers to USD so we need an oracle like chainlink to convert the data!
+    using PriceConverter for uint256;
 
-    uint256 public minimumUSD = 50; 
+    uint256 public minimumUSD = 50 * 10 ** 18; // we need to match the standard 18 decimal places
+
+    address[] public funders; // we want to keep track of the acct that fund the contract so well create an array of funders
+    mapping(address => uint256) public addressToAmountFunded;
+
+    address public owner;
+    
+    constructor(){
+        owner = msg.sender; // the msg.sender of the constructor function is going to be whomever is deploying the contract or deployed the contract.
+    }
     
     // if we want to send funds to a contract we need to make the function "payable"
     function fund() public payable {
-        // if we want someone to send a min amount of funds before executing a function we need to add the require function. require is also known as a checker. this function requires 1 eth so is the value being sent greater than 1 eth?
-        require(msg.value >= minimumUSD, "Didnt send enough ETH!!!"); // "msg" is a global keyword in sol. "msg.value" retrieves how much value someone is sending. require() will check if the right amount was sent. if the amount was not enough revert and send message "Didnt send enough ETH!!!". Revert undos any actions that happened before the requirement was not met and sends remaining gas back
+        msg.value.getConversionRate(); //<= same as getConversionRate(msg.value)
+        require(msg.value.getConversionRate() >= minimumUSD, "Didnt send enough ETH!!!"); 
         //1e18 == 1 * 10 ** 18 == 1000000000000000000 wei == 1 ETH
+        funders.push(msg.sender); //msg.sender == the address of whoever calls the fund function
+        addressToAmountFunded[msg.sender] = msg.value;
         }
 
-        function getPrice() public view {
-            // to get price we need a chainlink data feed because were interacting with data outside of the blockchain. So we'll need the contracts ABI and the contracts address (0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419) from the ETH/USD data feed via https://docs.chain.link/docs/ethereum-addresses/ ...now we need the ABI so we need to use the concept known as "interface". We can import the interface just like we did with other contracts, directly from github or from an npm (package manager) package. importing from chainlink example: import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol"; imported @ line 5
-            AggregatorV3Interface priceFeed = AggregatorV3Interface(0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419);
-            (/*uint80 roundId*/,int price, /*uint startedAt*/, /*uint timeStamp*/, /*uint80 answeredInRound*/) = priceFeed.latestRoundData(); // we only want price. the other variables can be deleted but i commented them out. keep commas!
-            // above is the price of ETH in terms of USD
+    function withdraw() public {
+        
+        //for loop structure = starting index, ending index, step amount. this is a way to loop through some type of index object, a range of number, or just do a task a certain amount of times.
+        for(uint256 funderIndex = 0; funderIndex < funders.length; funderIndex = funderIndex++) // start funderIndex @ 0 which is first in the array, we want to go the entire length of the array length so add .length method. we want to increase by 1 each loop so add ++ 
+        {
+             address funder = funders[funderIndex]; //accessing the zeroth element and it should return an address.
+             addressToAmountFunded[funder] = 0; // we want to use this to reset our mapping/funders array after withdrawl 
         }
+        // reset the array instead of deleting after withdrawl. setting it to zero ensures a new array and also the new keyword deploys and creates a new contract instance.
+        funders = new address[](0);
+        // how do we actually withdraw the funds and send the funds to whoever is calling this?
+        (bool callSuccess, ) = payable(msg.sender).call{value: address(this).balance}("");
+        require(callSuccess, "Call failed");
+    }
 
-        function getVersion() public view returns (uint256) {
-            AggregatorV3Interface priceFeed = AggregatorV3Interface(0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419);
-            return priceFeed.version();
-        }
-
-        function getConversionRate() public {}
-
-    //function withdraw() {
-
-    // }
+    modifier onlyOwner { //Function Modifiers are used to modify the behaviour of a function.
+        require(msg.sender == owner, "Sender is not owner!");
+        _; //the contract will execute the modifier 1st and then the rest of the code. the underscore means continue the rest of the code after executing the modifier. So before we withdraw we execute the require statement "msg.sender == owner" first and then call the rest of the code. if the require statement was below the underscore it would tell our function to execute the code before the require statement.
+    }
 }
 
-/*
-Oracle notes:
-smart contracts cant connect with external systems, data feeds, APIs, existing payment systems or off-chain resources on their own so we need oracles! blockchains are deterministic by design so all the nodes can reach consensus. different data will cause the nodes to not reach consensus.
-blockchain oracles like chainlink interact with real world off chain data and brings that external data or computation to smart contracts. we could use a centralized server but we know the issues with that. 
+/* 
+There are 3 different ways to send crpyto via the blockchain: https://solidity-by-example.org/sending-ether/
 
-- Chainlink VRF (Verifiable Random Function) is a provably fair and verifiable random number generator (RNG) that enables smart contracts to access random values without compromising security or usability. So when you see nfts that mint random features this is most likely what theyre using to create that randomness. 
+msg.sender = address but payable(msg.sender) = payable address
 
-- Chainlink Keepers enable conditional execution of your smart contracts functions through a hyper-reliable and decentralized automation platform that uses the same external network of node operators that secures billions in value. Theyre constantly listening for triggers to execute an action. example if you want your defi pool to change roi once and certain level of funds are staked you will need keepers to listen for that event and trigger the next event.
+transfer => payable (msg.sender).transfer(address(this).balance);
+to send ETH we can only work with payable addresses so we add the payable type caster
+--the problem with this method is that it is CAPPED @ 2300 GAS! Throws error if failed--
 
-- Connecting to any API with Chainlink enables your contracts to access to any external data source through our decentralized oracle network. GET REQUEST allows devs to make HTTP GET requests to external APIs from smart contracts, using Chainlink's Request & Receive Data cycle.
-*/
+send => bool sendSuccess = payable(msg.sender).send(address(this).balance);
+        require(sendSuccess, "Send failed");
+--the problem with this method is that it is CAPPED @ 2300 GAS! returns bool--
+
+call => 
+(bool callSuccess, bytes dataReturned) = payable(msg.sender).call{value: address(this).balance}(""); require(callSuccess, "Call failed");
+
+we will put the function info in parenthesis. this call function returns 2 variables and when 2 variables are returned we can show that by placing them into () on the left hand side. if the function called returns some data or value were gonna need to save that in the dataReturned variable. it will also return a boolean for call success in regard to the function being called succesfully or not. since bytes is an array the data returned needs to be in memory. but were not returning any data this time because were not calling a function so we really just need the callSuccess variable to return true or false.
+
+lower level command thats powerful and can call virtually any function in all of ethereum w/ out having the API. forward all gas or set gas, returns bool.
+
+We want to set it up so that whoever deploys the contract is the owner so we need a constructor! We can also set up some params so that only the owner of the contract can call the withdraw() function! A constructor is the function that gets called immediately whenever you deploy a contract. A Constructor is a special function declared using constructor keyword. It is an optional funtion and is used to initialize state variables of a contract. Since the constructor is called first we can use it set up who the owner of the contract is immediately
+
+after deployement youll notice when you press the owner button that the address is our goerliETH address which is 0x6A3376F34fAa95B8440a86B2eFC0937343A6C6fe
+
+withdraw is orange because were not paying any ETH were gaining ETH (or whatever native blockchain currency)
+
+fund is red because its a payable function
+
+1 press fund
+*/ 
